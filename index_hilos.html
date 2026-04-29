@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Simulador de Procesos, Hilos y Múltiples CPUs</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <div class="logo">CPU</div>
+    <div>
+      <h1>Simulador de Planificación con Hilos</h1>
+      <p>Procesos · KLT · ULT · 1/2 CPUs · FIFO · SJF · SPN · RR · STR · Prioridades · I/O1/I/O2</p>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="panel panel-left">
+      <section class="card">
+        <div class="card-head"><h2>Arquitectura</h2></div>
+        <div class="card-body stack">
+          <div class="grid-2">
+            <div>
+              <label>CPUs</label>
+              <select id="cpu-count" onchange="onConfigChange()">
+                <option value="1">1 CPU</option>
+                <option value="2">2 CPUs</option>
+              </select>
+            </div>
+            <div>
+              <label>Política de cola</label>
+              <select id="queue-mode">
+                <option value="shared">Ready Queue compartida</option>
+                <option value="split">Ready Queue por CPU / multinivel</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label>Algoritmo del sistema operativo</label>
+            <select id="os-algo" onchange="onConfigChange()">
+              <optgroup label="Apropiativos">
+                <option value="fifo">FIFO</option>
+                <option value="sjf">SJF</option>
+                <option value="spn">SPN</option>
+              </optgroup>
+              <optgroup label="Expulsivos">
+                <option value="rr">Round Robin</option>
+                <option value="str">STR</option>
+                <option value="prio">Prioridades</option>
+              </optgroup>
+            </select>
+          </div>
+
+          <div id="quantum-config" class="grid-2">
+            <div>
+              <label>Quantum CPU1</label>
+              <input id="quantum-1" type="number" min="1" value="4">
+            </div>
+            <div id="quantum-2-wrap">
+              <label>Quantum CPU2</label>
+              <input id="quantum-2" type="number" min="1" value="4">
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div>
+              <label>Biblioteca ULT</label>
+              <select id="thread-algo">
+                <option value="fifo">FIFO</option>
+                <option value="sjf">SJF</option>
+                <option value="rr">Round Robin</option>
+              </select>
+            </div>
+            <div>
+              <label>Quantum ULT</label>
+              <input id="thread-quantum" type="number" min="1" value="2">
+            </div>
+          </div>
+
+          <p id="algo-help" class="hint"></p>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Carga de trabajo</h2>
+          <div class="btn-row">
+            <button class="btn btn-ghost" onclick="clearRows()">Limpiar</button>
+            <button class="btn btn-primary" onclick="addRow()">Agregar</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="example-row">
+            <select id="example-select">
+              <option value="">Cargar ejemplo</option>
+              <optgroup label="Apunte de teoría">
+                <option value="teoria_fifo">FIFO ejemplo teoría</option>
+                <option value="teoria_sjf">SJF ejemplo teoría</option>
+                <option value="teoria_rr_2cpu">2 CPUs teoría RR=2/RR=4</option>
+                <option value="teoria_hilos_rr">Hilos teoría SO RR=5 / Biblioteca RR=2</option>
+              </optgroup>
+              <optgroup label="Guía de ejercicios">
+                <option value="guia_fifo_1">FIFO ejercicio 1</option>
+                <option value="guia_fifo_2">FIFO ejercicio 2</option>
+                <option value="guia_ej3_fifo">Ejercicio 3 con FIFO</option>
+                <option value="guia_ej3_sjf">Ejercicio 3 con SJF</option>
+                <option value="guia_ej3_spn">Ejercicio 3 con SPN</option>
+                <option value="guia_rr_5">Round Robin RR=5</option>
+                <option value="guia_str_5">STR ejercicio RR=5</option>
+                <option value="guia_2cpu_rr">2 CPUs guía RR=2/RR=4</option>
+                <option value="guia_hilos_sjf">Hilos guía SO RR=4 / Biblioteca SJF</option>
+                <option value="guia_hilos_rr">Hilos guía SO RR=4 / Biblioteca RR=2</option>
+              </optgroup>
+              <optgroup label="Excel">
+                <option value="excel_fifo">FIFO y SJF.xlsx - FIFO</option>
+                <option value="excel_sjf">FIFO y SJF.xlsx - SJF</option>
+                <option value="hilos_xls">HILOS.xls SO RR=4 / Biblioteca RR=2</option>
+              </optgroup>
+            </select>
+            <button class="btn btn-ghost" onclick="loadSelectedExample()">Cargar</button>
+          </div>
+
+          <div class="hint">
+            Tipo: <strong>Proceso</strong> normal, <strong>KLT</strong> planificado por el SO, o <strong>ULT</strong> agrupado por biblioteca.
+            Para ULT, usá el campo <strong>Grupo</strong> como proceso padre.
+          </div>
+
+          <div class="table-wrap">
+            <table class="proc-table">
+              <thead>
+                <tr>
+                  <th>Tipo</th>
+                  <th>Nom.</th>
+                  <th>Grupo</th>
+                  <th>Arr.</th>
+                  <th>CPU1</th>
+                  <th>I/O</th>
+                  <th>Dur.</th>
+                  <th>CPU2</th>
+                  <th>Prio</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="workload-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <button class="btn-run" onclick="runSimulation()">Ejecutar simulación</button>
+
+      <section class="card">
+        <div class="card-head"><h2>Modelo</h2></div>
+        <div class="card-body mini">
+          <p><strong>Proceso/KLT:</strong> entran directo a la Ready Queue del SO.</p>
+          <p><strong>ULT:</strong> se agrupan por biblioteca y se ordenan con la política ULT antes de competir por CPU.</p>
+          <p><strong>2 CPUs:</strong> se pueden usar con una cola compartida o una cola por CPU.</p>
+        </div>
+      </section>
+    </aside>
+
+    <section class="panel panel-right">
+      <section id="empty-state" class="card empty">
+        <div>Configurá procesos, hilos y CPUs para generar los Gantt.</div>
+      </section>
+
+      <section id="results" class="results" hidden>
+        <section class="card">
+          <div class="card-head">
+            <h2>Diagrama de Gantt</h2>
+            <span id="total-time"></span>
+          </div>
+          <div id="legend" class="legend"></div>
+          <div id="gantt-output"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Estadísticas</h2></div>
+          <div class="table-wrap">
+            <table id="stats-table" class="stats-table"></table>
+          </div>
+          <div id="avg-stats" class="avg-stats"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Traza</h2>
+            <button id="trace-toggle" class="btn btn-ghost" onclick="toggleTrace()">Mostrar</button>
+          </div>
+          <div id="trace" class="trace"></div>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
