@@ -1,13 +1,13 @@
 const COLORS = [
-  '#6c5fff','#1de9a0','#ff4d6a','#ffc940','#22d4f5',
-  '#ff79c6','#8be9fd','#50fa7b','#ffb86c','#bd93f9',
-  '#f1fa8c','#ff6e6e','#43e8d8','#c792ea','#82aaff'
+  '#2563eb','#0e9f9a','#e11d48','#d97706','#0891b2',
+  '#7c3aed','#059669','#b45309','#be123c','#475569',
+  '#0284c7','#65a30d','#c2410c','#9333ea','#0f766e'
 ];
 
 const HELP = {
   fifo: 'FIFO: orden de llegada. En empates iniciales se usa orden alfabético; las colisiones de I/O se mantienen FIFO.',
   sjf: 'SJF: ordena por peso total CPU + I/O. No expulsa al proceso en ejecución.',
-  spn: 'SPN: ordena por CPU total. No expulsa al proceso en ejecución.',
+  spn: 'SPN: ordena por CPU total. En esta guía se trabaja como expulsivo.',
   rr: 'Round Robin: usa quantum por CPU. Al agotarse vuelve al final de la Ready Queue.',
   str: 'STR: expulsa si aparece una unidad con menor CPU restante.',
   prio: 'Prioridades: mayor número significa mayor prioridad.'
@@ -65,28 +65,6 @@ const EXAMPLES = {
       ['Proceso','B','',2,10,'io1',10,5,1],
       ['Proceso','C','',0,5,'none','', '',1],
       ['Proceso','D','',4,10,'io1',5,5,1],
-    ]
-  },
-  excel_fifo: {
-    cpuCount: 1,
-    osAlgo: 'fifo',
-    rows: [
-      ['Proceso','A','',2,4,'io2',5,6,1],
-      ['Proceso','B','',0,3,'io1',3,2,1],
-      ['Proceso','C','',6,4,'io2',5,5,1],
-      ['Proceso','D','',3,5,'io1',5,5,1],
-      ['Proceso','E','',4,4,'none','', '',1],
-    ]
-  },
-  excel_sjf: {
-    cpuCount: 1,
-    osAlgo: 'sjf',
-    rows: [
-      ['Proceso','A','',2,3,'io2',2,4,1],
-      ['Proceso','B','',0,5,'io1',3,5,1],
-      ['Proceso','C','',5,4,'io2',2,4,1],
-      ['Proceso','D','',4,2,'io1',2,2,1],
-      ['Proceso','E','',3,4,'io1',2,4,1],
     ]
   },
   guia_ej3_fifo: {
@@ -229,9 +207,28 @@ let rowCounter = 0;
 let traceLines = [];
 
 window.addEventListener('DOMContentLoaded', () => {
+  initTheme();
   onConfigChange();
   loadExample('hilos_xls');
 });
+
+function initTheme() {
+  const savedTheme = localStorage.getItem('sim-hilos-theme');
+  const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+  applyTheme(savedTheme || (prefersDark ? 'dark' : 'light'));
+}
+
+function toggleTheme() {
+  const nextTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('sim-hilos-theme', nextTheme);
+  applyTheme(nextTheme);
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const toggle = document.getElementById('theme-toggle');
+  if (toggle) toggle.textContent = theme === 'dark' ? 'Modo claro' : 'Modo oscuro';
+}
 
 function onConfigChange() {
   const cpuCount = Number(document.getElementById('cpu-count').value);
@@ -347,7 +344,7 @@ function getWorkload() {
       bursts.push({type: ioType, duration: ioDur});
       bursts.push({type:'cpu', duration: cpu2});
     } else if (cpu2 > 0) {
-      bursts[0].duration += cpu2;
+      bursts.push({type:'cpu', duration: cpu2});
     }
 
     const totalCPU = bursts.filter(b => b.type === 'cpu').reduce((s,b) => s + b.duration, 0);
@@ -608,6 +605,7 @@ function compareByAlgo(a, b, algo) {
 }
 
 function shouldPreempt(current, head, algo) {
+  if (algo === 'spn') return head.totalCPU < current.totalCPU;
   if (algo === 'str') return head.cpuTotalRemaining < current.cpuTotalRemaining;
   if (algo === 'prio') return head.priority > current.priority;
   return false;
@@ -675,9 +673,7 @@ function simulateThreaded(units, config) {
         weight: children.reduce((s,c) => s + c.weight, 0),
         cpuTotalRemaining: children.reduce((s,c) => s + c.totalCPU, 0),
         children,
-        threadQueue: [],
         currentChild: null,
-        resumeChild: null,
         state: 'new',
         readySeq: 0,
         finishTime: null
@@ -698,9 +694,7 @@ function simulateThreaded(units, config) {
         weight: u.weight,
         cpuTotalRemaining: u.totalCPU,
         children: [child],
-        threadQueue: [],
         currentChild: child,
-        resumeChild: null,
         state: 'new',
         readySeq: 0,
         finishTime: null
@@ -724,9 +718,7 @@ function simulateThreaded(units, config) {
       weight: u.weight,
       cpuTotalRemaining: u.totalCPU,
       children: [child],
-      threadQueue: [],
       currentChild: child,
-      resumeChild: null,
       state: 'new',
       readySeq: 0,
       finishTime: null
@@ -764,7 +756,6 @@ function simulateThreaded(units, config) {
             child.state = 'ready';
             child.cpuRemaining = child.bursts[child.burstIdx].duration;
             child.readySeq = seq++;
-            enqueueThread(task, child);
           }
         }
         enteringTasks.push(task);
@@ -781,7 +772,6 @@ function simulateThreaded(units, config) {
         child.state = 'ready';
         child.readySeq = seq++;
         const owner = tasks.find(task => task.name === child.ownerName);
-        if (owner) enqueueThread(owner, child);
         if (owner && owner.state === 'wait') {
           owner.state = 'ready';
           owner.readySeq = seq++;
@@ -815,13 +805,6 @@ function simulateThreaded(units, config) {
         if (task.currentChild && task.currentChild.state === 'execute') {
           task.currentChild.state = 'ready';
           task.currentChild.readySeq = seq++;
-          if (task.kind === 'process' && config.threadAlgo === 'rr' && task.currentChild.threadQuantumLeft <= 0) {
-            enqueueThread(task, task.currentChild);
-            task.resumeChild = null;
-            log(t, `ULT_QUANTUM_EXP ${labelOf(task.currentChild)}`);
-          } else {
-            task.resumeChild = task.currentChild;
-          }
           task.currentChild = null;
         }
         task.quantumFromCpu = cpus.indexOf(cpu);
@@ -830,11 +813,9 @@ function simulateThreaded(units, config) {
         cpu.current = null;
         continue;
       }
-      if (task.kind === 'process' && config.threadAlgo === 'rr' && task.currentChild && task.currentChild.threadQuantumLeft <= 0) {
+      if (task.kind === 'process' && task.currentChild && task.currentChild.threadQuantumLeft <= 0) {
         task.currentChild.state = 'ready';
         task.currentChild.readySeq = seq++;
-        if (task.resumeChild === task.currentChild) task.resumeChild = null;
-        enqueueThread(task, task.currentChild);
         log(t, `ULT_QUANTUM_EXP ${labelOf(task.currentChild)}`);
         task.currentChild = null;
       }
@@ -852,7 +833,6 @@ function simulateThreaded(units, config) {
           if (cpu.current.currentChild?.state === 'execute') {
             cpu.current.currentChild.state = 'ready';
             cpu.current.currentChild.readySeq = seq++;
-            cpu.current.resumeChild = cpu.current.currentChild;
             cpu.current.currentChild = null;
           }
           cpu.current.state = 'ready';
@@ -909,7 +889,8 @@ function simulateThreaded(units, config) {
       }
       child.state = 'execute';
       task.currentChild = child;
-      cpu.timeline.push({t, names:[child.name]});
+      const names = child.name === task.name ? [task.name] : [task.name, child.name];
+      cpu.timeline.push({t, names});
       child.cpuRemaining--;
       child.cpuTotalRemaining--;
       task.cpuTotalRemaining--;
@@ -924,20 +905,15 @@ function simulateThreaded(units, config) {
     t++;
   }
 
-  const parentUnits = tasks.map(task => {
-    const visible = task.kind === 'process'
-      ? task.children.find(child => child.runtimeType === 'MAIN')
-      : task.children[0];
-    return {
-      type: task.type,
-      name: task.name,
-      group: task.name,
-      arrival: task.arrival,
-      totalCPU: visible.totalCPU,
-      totalIO: visible.totalIO,
-      finishTime: visible.finishTime ?? task.finishTime
-    };
-  });
+  const parentUnits = tasks.map(task => ({
+    type: task.type,
+    name: task.name,
+    group: task.name,
+    arrival: task.arrival,
+    totalCPU: task.totalCPU,
+    totalIO: task.totalIO,
+    finishTime: task.finishTime ?? Math.max(...task.children.map(c => c.finishTime || 0))
+  }));
   const visibleUnits = [...parentUnits, ...runtimeUnits.filter(u => u.type === 'ULT')];
 
   return {
@@ -958,7 +934,6 @@ function finishCompletedThreadBursts(task, t, io, log, nextSeq) {
   if (child.burstIdx >= child.bursts.length) {
     child.state = 'kill';
     child.finishTime = t;
-    if (task.resumeChild === child) task.resumeChild = null;
     task.currentChild = null;
     log(t, `THREAD_KILL ${labelOf(child)}`);
     return;
@@ -968,13 +943,9 @@ function finishCompletedThreadBursts(task, t, io, log, nextSeq) {
     child.state = 'ready';
     child.cpuRemaining = next.duration;
     child.readySeq = nextSeq();
-    if (task.resumeChild === child) task.resumeChild = null;
-    enqueueThread(task, child);
-    task.currentChild = null;
   } else {
     child.state = 'wait';
     io[next.type].queue.push(child);
-    if (task.resumeChild === child) task.resumeChild = null;
     log(t, `IO_REQ ${labelOf(child)} a ${next.type.toUpperCase()}`);
   }
   task.currentChild = null;
@@ -986,32 +957,13 @@ function pickThreadChild(task, config, nextSeq) {
     return child.state === 'ready' || child.state === 'execute' ? child : null;
   }
   if (task.currentChild && task.currentChild.state === 'execute') return task.currentChild;
-  if (task.resumeChild && task.resumeChild.state === 'ready' && task.resumeChild.threadQuantumLeft > 0) {
-    return task.resumeChild;
-  }
-  const ready = config.threadAlgo === 'sjf'
-    ? task.children.filter(c => c.state === 'ready')
-    : cleanThreadQueue(task);
+  const ready = task.children.filter(c => c.state === 'ready');
   if (!ready.length) return null;
-  if (config.threadAlgo === 'sjf') {
-    ready.sort((a,b) => compareByAlgo(a, b, config.threadAlgo) || a.readySeq - b.readySeq || a.name.localeCompare(b.name));
-  }
-  const child = config.threadAlgo === 'sjf' ? ready[0] : ready.shift();
-  task.resumeChild = null;
+  ready.sort((a,b) => compareByAlgo(a, b, config.threadAlgo) || a.readySeq - b.readySeq || a.name.localeCompare(b.name));
+  const child = ready[0];
   if (config.threadAlgo === 'rr') child.threadQuantumLeft = config.threadQuantum;
   child.readySeq = nextSeq();
   return child;
-}
-
-function enqueueThread(task, child) {
-  if (task.kind !== 'process' || child.state !== 'ready') return;
-  task.threadQueue = task.threadQueue || [];
-  if (!task.threadQueue.includes(child)) task.threadQueue.push(child);
-}
-
-function cleanThreadQueue(task) {
-  task.threadQueue = (task.threadQueue || []).filter(child => child.state === 'ready');
-  return task.threadQueue;
 }
 
 function sortThreadQueues(queues, config) {
