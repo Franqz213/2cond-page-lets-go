@@ -12,10 +12,11 @@
 <body>
   <header>
     <div class="logo">CPU</div>
-    <div>
+    <div class="header-copy">
       <h1>Simulador de Planificación con Hilos</h1>
       <p>Procesos · KLT · ULT · 1/2 CPUs · FIFO · SJF · SPN · RR · STR · Prioridades · I/O1/I/O2</p>
     </div>
+    <button id="theme-toggle" class="theme-toggle" type="button" onclick="toggleTheme()">Modo oscuro</button>
   </header>
 
   <main class="layout">
@@ -46,9 +47,9 @@
               <optgroup label="Apropiativos">
                 <option value="fifo">FIFO</option>
                 <option value="sjf">SJF</option>
-                <option value="spn">SPN</option>
               </optgroup>
               <optgroup label="Expulsivos">
+                <option value="spn">SPN</option>
                 <option value="rr">Round Robin</option>
                 <option value="str">STR</option>
                 <option value="prio">Prioridades</option>
@@ -117,8 +118,6 @@
                 <option value="guia_hilos_rr">Hilos guía SO RR=4 / Biblioteca RR=2</option>
               </optgroup>
               <optgroup label="Excel">
-                <option value="excel_fifo">FIFO y SJF.xlsx - FIFO</option>
-                <option value="excel_sjf">FIFO y SJF.xlsx - SJF</option>
                 <option value="hilos_xls">HILOS.xls SO RR=4 / Biblioteca RR=2</option>
               </optgroup>
             </select>
