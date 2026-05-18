@@ -399,6 +399,12 @@ function simulate(units, config) {
   let seq = 0;
   let t = 0;
   const MAX = 4000;
+  const markReady = (p, cause) => {
+    p.state = 'ready';
+    p.readyAt = t;
+    p.readyCause = cause;
+    p.readySeq = seq++;
+  };
 
   while (t < MAX) {
     if (ps.every(p => p.state === 'kill')) break;
@@ -406,9 +412,8 @@ function simulate(units, config) {
 
     for (const p of ps) {
       if (p.state === 'new' && p.arrival === t) {
-        p.state = 'ready';
         p.cpuRemaining = p.bursts[p.burstIdx].duration;
-        p.readySeq = seq++;
+        markReady(p, 'arrival');
         entering.push(p);
         log(t, `ARRIBO ${labelOf(p)}`);
       }
@@ -420,8 +425,7 @@ function simulate(units, config) {
         const p = dev.current;
         p.burstIdx++;
         p.cpuRemaining = p.bursts[p.burstIdx].duration;
-        p.state = 'ready';
-        p.readySeq = seq++;
+        markReady(p, 'io');
         entering.push(p);
         log(t, `IO_FIN ${labelOf(p)} en ${dev.label}`);
         dev.current = null;
@@ -440,9 +444,8 @@ function simulate(units, config) {
         } else {
           const next = p.bursts[p.burstIdx];
           if (next.type === 'cpu') {
-            p.state = 'ready';
             p.cpuRemaining = next.duration;
-            p.readySeq = seq++;
+            markReady(p, 'cpu');
             entering.push(p);
             log(t, `CPU_BURST ${labelOf(p)} vuelve a Ready`);
           } else {
@@ -453,15 +456,13 @@ function simulate(units, config) {
         }
         cpu.current = null;
       } else if (config.osAlgo === 'rr' && cpu.quantumLeft <= 0) {
-        p.state = 'ready';
-        p.readySeq = seq++;
+        markReady(p, 'quantum');
         p.quantumFromCpu = cpus.indexOf(cpu);
         entering.push(p);
         cpu.current = null;
         log(t, `QUANTUM_EXP ${labelOf(p)} en ${cpu.label}`);
       } else if (p.type === 'ULT' && config.threadAlgo === 'rr' && p.rrThreadLeft <= 0) {
-        p.state = 'ready';
-        p.readySeq = seq++;
+        markReady(p, 'thread-quantum');
         entering.push(p);
         cpu.current = null;
         log(t, `ULT_QUANTUM_EXP ${labelOf(p)}`);
@@ -478,6 +479,8 @@ function simulate(units, config) {
         if (q.length && shouldPreempt(cpu.current, q[0], config.osAlgo)) {
           log(t, `PREEMPT ${labelOf(cpu.current)} por ${labelOf(q[0])}`);
           cpu.current.state = 'ready';
+          cpu.current.readyAt = t;
+          cpu.current.readyCause = 'preempt';
           cpu.current.readySeq = seq++;
           q.push(cpu.current);
           cpu.current = null;
@@ -511,20 +514,20 @@ function simulate(units, config) {
     for (const cpu of cpus) {
       if (cpu.current) {
         const p = cpu.current;
-        cpu.timeline.push({t, name:p.name});
+        cpu.timeline.push({t, name:p.name, states: snapshotStates(ps)});
         p.cpuRemaining--;
         p.cpuTotalRemaining--;
         if (config.osAlgo === 'rr') cpu.quantumLeft--;
         if (p.type === 'ULT' && config.threadAlgo === 'rr') p.rrThreadLeft--;
       } else {
-        cpu.timeline.push({t, name:'idle'});
+        cpu.timeline.push({t, name:'idle', states: snapshotStates(ps)});
       }
     }
 
     for (const key of ['io1','io2']) {
       const dev = io[key];
-      if (dev.current) dev.timeline.push({t, name:dev.current.name});
-      else dev.timeline.push({t, name:'idle'});
+      if (dev.current) dev.timeline.push({t, name:dev.current.name, states: snapshotStates(ps)});
+      else dev.timeline.push({t, name:'idle', states: snapshotStates(ps)});
     }
     t++;
   }
@@ -542,10 +545,21 @@ function simulate(units, config) {
 
 function pushReady(readyQueues, entering, config) {
   if (!entering.length) return;
+  if (config.queueMode !== 'split') {
+    const incoming = (config.osAlgo === 'fifo' || config.osAlgo === 'rr')
+      ? [...entering].sort(compareReadyEntry)
+      : entering;
+    for (const p of incoming) {
+      delete p.quantumFromCpu;
+      enqueueReady(readyQueues, p, config);
+    }
+    return;
+  }
+
   const quantumExpired = entering.filter(p => p.quantumFromCpu != null);
   const normalEntering = entering.filter(p => p.quantumFromCpu == null);
   const incoming = (config.osAlgo === 'fifo' || config.osAlgo === 'rr')
-    ? [...normalEntering].sort((a,b) => a.arrival - b.arrival || a.name.localeCompare(b.name))
+    ? [...normalEntering].sort(compareReadyEntry)
     : normalEntering;
 
   for (const p of incoming) {
@@ -558,6 +572,12 @@ function pushReady(readyQueues, entering, config) {
       delete p.quantumFromCpu;
     }
   }
+}
+
+function compareReadyEntry(a, b) {
+  return a.arrival - b.arrival
+    || a.name.localeCompare(b.name)
+    || (a.readySeq ?? 0) - (b.readySeq ?? 0);
 }
 
 function queueForCpu(readyQueues, cpuIndex, config) {
@@ -593,7 +613,7 @@ function compareUnits(a, b, config) {
     const threadCmp = compareByAlgo(a, b, config.threadAlgo);
     if (threadCmp !== 0) return threadCmp;
   }
-  return a.readySeq - b.readySeq || a.arrival - b.arrival || a.name.localeCompare(b.name);
+  return compareReadyEntry(a, b);
 }
 
 function compareByAlgo(a, b, algo) {
@@ -655,11 +675,11 @@ function simulateThreaded(units, config) {
   for (const u of units) {
     if (u.type === 'ULT') continue;
     const groupChildren = childrenByGroup.get(u.name) || childrenByGroup.get(u.group) || [];
-    if (groupChildren.length) {
+    if (u.type === 'Proceso' && groupChildren.length) {
       const own = makeRuntime(u, u.name, 'MAIN');
       const children = [
         own,
-        ...groupChildren.map(c => makeRuntime({...c, arrival: c.arrival || u.arrival}, u.name, 'ULT'))
+        ...groupChildren.map(c => makeRuntime({...c, arrival: Math.max(c.arrival, u.arrival)}, u.name, 'ULT'))
       ];
       children.forEach(c => runtimeUnits.push(c));
       tasks.push({
@@ -742,6 +762,21 @@ function simulateThreaded(units, config) {
   let seq = 0;
   let t = 0;
   const MAX = 5000;
+  const markTaskReady = (task, cause) => {
+    task.state = 'ready';
+    task.readyAt = t;
+    task.readyCause = cause;
+    task.readySeq = seq++;
+  };
+  const markChildReady = (child, cause) => {
+    child.state = 'ready';
+    child.readyAt = t;
+    child.readyCause = cause;
+    if (child.runtimeType === 'ULT' && config.threadAlgo === 'rr' && cause !== 'quantum' && cause !== 'preempt') {
+      child.threadQuantumLeft = config.threadQuantum;
+    }
+    child.readySeq = seq++;
+  };
 
   while (t < MAX) {
     if (tasks.every(task => task.state === 'kill')) break;
@@ -749,13 +784,11 @@ function simulateThreaded(units, config) {
 
     for (const task of tasks) {
       if (task.state === 'new' && task.arrival === t) {
-        task.state = 'ready';
-        task.readySeq = seq++;
+        markTaskReady(task, 'arrival');
         for (const child of task.children) {
           if (child.state === 'new') {
-            child.state = 'ready';
             child.cpuRemaining = child.bursts[child.burstIdx].duration;
-            child.readySeq = seq++;
+            markChildReady(child, 'arrival');
           }
         }
         enteringTasks.push(task);
@@ -769,12 +802,10 @@ function simulateThreaded(units, config) {
         const child = dev.current;
         child.burstIdx++;
         child.cpuRemaining = child.bursts[child.burstIdx].duration;
-        child.state = 'ready';
-        child.readySeq = seq++;
+        markChildReady(child, 'io');
         const owner = tasks.find(task => task.name === child.ownerName);
         if (owner && owner.state === 'wait') {
-          owner.state = 'ready';
-          owner.readySeq = seq++;
+          markTaskReady(owner, 'io');
           enteringTasks.push(owner);
         }
         log(t, `IO_FIN ${labelOf(child)} en ${dev.label}`);
@@ -785,12 +816,18 @@ function simulateThreaded(units, config) {
     for (const cpu of cpus) {
       const task = cpu.current;
       if (!task) continue;
-      finishCompletedThreadBursts(task, t, io, log, () => seq++);
+      const blockedByUltIo = finishCompletedThreadBursts(task, t, io, log, markChildReady);
       if (task.children.every(c => c.state === 'kill')) {
         task.state = 'kill';
         task.finishTime = t;
         task.children.forEach(c => { if (c.finishTime == null) c.finishTime = t; });
         log(t, `KILL ${task.name} desde ${cpu.label}`);
+        cpu.current = null;
+        continue;
+      }
+      if (blockedByUltIo) {
+        task.state = 'wait';
+        log(t, `PROC_WAIT ${task.name} por I/O ULT`);
         cpu.current = null;
         continue;
       }
@@ -800,12 +837,9 @@ function simulateThreaded(units, config) {
         continue;
       }
       if (config.osAlgo === 'rr' && cpu.quantumLeft <= 0) {
-        task.state = 'ready';
-        task.readySeq = seq++;
+        markTaskReady(task, 'quantum');
         if (task.currentChild && task.currentChild.state === 'execute') {
-          task.currentChild.state = 'ready';
-          task.currentChild.readySeq = seq++;
-          task.currentChild = null;
+          markChildReady(task.currentChild, 'quantum');
         }
         task.quantumFromCpu = cpus.indexOf(cpu);
         enteringTasks.push(task);
@@ -813,9 +847,8 @@ function simulateThreaded(units, config) {
         cpu.current = null;
         continue;
       }
-      if (task.kind === 'process' && task.currentChild && task.currentChild.threadQuantumLeft <= 0) {
-        task.currentChild.state = 'ready';
-        task.currentChild.readySeq = seq++;
+      if (task.kind === 'process' && task.currentChild?.runtimeType === 'ULT' && task.currentChild.threadQuantumLeft <= 0) {
+        markChildReady(task.currentChild, 'thread-quantum');
         log(t, `ULT_QUANTUM_EXP ${labelOf(task.currentChild)}`);
         task.currentChild = null;
       }
@@ -831,11 +864,11 @@ function simulateThreaded(units, config) {
         const q = queueForCpu(readyQueues, i, config);
         if (q.length && shouldPreempt(cpu.current, q[0], config.osAlgo)) {
           if (cpu.current.currentChild?.state === 'execute') {
-            cpu.current.currentChild.state = 'ready';
-            cpu.current.currentChild.readySeq = seq++;
-            cpu.current.currentChild = null;
+            markChildReady(cpu.current.currentChild, 'preempt');
           }
           cpu.current.state = 'ready';
+          cpu.current.readyAt = t;
+          cpu.current.readyCause = 'preempt';
           cpu.current.readySeq = seq++;
           q.push(cpu.current);
           log(t, `PREEMPT ${cpu.current.name} por ${q[0].name}`);
@@ -871,7 +904,7 @@ function simulateThreaded(units, config) {
     for (const cpu of cpus) {
       const task = cpu.current;
       if (!task) {
-        cpu.timeline.push({t, names:['idle']});
+        cpu.timeline.push({t, names:['idle'], states: snapshotThreadStates(tasks, runtimeUnits)});
         continue;
       }
       const child = pickThreadChild(task, config, () => seq++);
@@ -884,23 +917,23 @@ function simulateThreaded(units, config) {
           task.state = 'wait';
         }
         cpu.current = null;
-        cpu.timeline.push({t, names:['idle']});
+        cpu.timeline.push({t, names:['idle'], states: snapshotThreadStates(tasks, runtimeUnits)});
         continue;
       }
       child.state = 'execute';
       task.currentChild = child;
       const names = child.name === task.name ? [task.name] : [task.name, child.name];
-      cpu.timeline.push({t, names});
+      cpu.timeline.push({t, names, states: snapshotThreadStates(tasks, runtimeUnits)});
       child.cpuRemaining--;
       child.cpuTotalRemaining--;
       task.cpuTotalRemaining--;
       if (config.osAlgo === 'rr') cpu.quantumLeft--;
-      if (task.kind === 'process') child.threadQuantumLeft--;
+      if (task.kind === 'process' && child.runtimeType === 'ULT') child.threadQuantumLeft--;
     }
 
     for (const key of ['io1','io2']) {
       const dev = io[key];
-      dev.timeline.push({t, names: dev.current ? [dev.current.name] : ['idle']});
+      dev.timeline.push({t, names: dev.current ? [dev.current.name] : ['idle'], states: snapshotThreadStates(tasks, runtimeUnits)});
     }
     t++;
   }
@@ -927,28 +960,30 @@ function simulateThreaded(units, config) {
   };
 }
 
-function finishCompletedThreadBursts(task, t, io, log, nextSeq) {
+function finishCompletedThreadBursts(task, t, io, log, markChildReady) {
   const child = task.currentChild;
-  if (!child || child.cpuRemaining > 0) return;
+  if (!child || child.cpuRemaining > 0) return false;
   child.burstIdx++;
   if (child.burstIdx >= child.bursts.length) {
     child.state = 'kill';
     child.finishTime = t;
     task.currentChild = null;
     log(t, `THREAD_KILL ${labelOf(child)}`);
-    return;
+    return false;
   }
   const next = child.bursts[child.burstIdx];
   if (next.type === 'cpu') {
-    child.state = 'ready';
     child.cpuRemaining = next.duration;
-    child.readySeq = nextSeq();
+    markChildReady(child, 'cpu');
   } else {
     child.state = 'wait';
     io[next.type].queue.push(child);
     log(t, `IO_REQ ${labelOf(child)} a ${next.type.toUpperCase()}`);
+    task.currentChild = null;
+    return task.kind === 'process' && child.runtimeType === 'ULT';
   }
   task.currentChild = null;
+  return false;
 }
 
 function pickThreadChild(task, config, nextSeq) {
@@ -957,11 +992,28 @@ function pickThreadChild(task, config, nextSeq) {
     return child.state === 'ready' || child.state === 'execute' ? child : null;
   }
   if (task.currentChild && task.currentChild.state === 'execute') return task.currentChild;
-  const ready = task.children.filter(c => c.state === 'ready');
+  if (
+    task.currentChild
+    && task.currentChild.state === 'ready'
+    && (task.currentChild.readyCause === 'quantum' || task.currentChild.readyCause === 'preempt')
+    && (task.currentChild.runtimeType !== 'ULT' || task.currentChild.threadQuantumLeft > 0)
+  ) {
+    return task.currentChild;
+  }
+  const main = task.children.find(c => c.runtimeType === 'MAIN');
+  const ults = task.children.filter(c => c.runtimeType === 'ULT');
+  if (main && main.state === 'ready' && main.burstIdx === 0) {
+    main.readySeq = nextSeq();
+    return main;
+  }
+  const hasLiveUlt = ults.some(c => c.state !== 'kill');
+  const ready = (hasLiveUlt ? ults : task.children).filter(c => c.state === 'ready');
   if (!ready.length) return null;
   ready.sort((a,b) => compareByAlgo(a, b, config.threadAlgo) || a.readySeq - b.readySeq || a.name.localeCompare(b.name));
   const child = ready[0];
-  if (config.threadAlgo === 'rr') child.threadQuantumLeft = config.threadQuantum;
+  if (child.runtimeType === 'ULT' && config.threadAlgo === 'rr' && child.threadQuantumLeft <= 0) {
+    child.threadQuantumLeft = config.threadQuantum;
+  }
   child.readySeq = nextSeq();
   return child;
 }
@@ -973,7 +1025,26 @@ function sortThreadQueues(queues, config) {
 
 function compareTask(a, b, config) {
   const cmp = compareByAlgo(a, b, config.osAlgo);
-  return cmp || a.readySeq - b.readySeq || a.arrival - b.arrival || a.name.localeCompare(b.name);
+  return cmp || compareReadyEntry(a, b);
+}
+
+function snapshotStates(units) {
+  const states = {};
+  for (const u of units) states[u.name] = u.state;
+  return states;
+}
+
+function snapshotThreadStates(tasks, runtimeUnits) {
+  const states = {};
+  const taskByName = new Map(tasks.map(task => [task.name, task]));
+  for (const task of tasks) states[task.name] = task.state;
+  for (const child of runtimeUnits) {
+    const owner = taskByName.get(child.ownerName);
+    states[child.name] = owner?.state === 'wait' && child.state === 'ready'
+      ? 'wait'
+      : child.state;
+  }
+  return states;
 }
 
 function renderResult(result) {
@@ -1029,8 +1100,10 @@ function buildGanttTable(timeline, names, totalTime, colorMap) {
       const activeNames = timeline[t]?.names || (timeline[t]?.name ? [timeline[t].name] : []);
       const active = activeNames.includes(name);
       const ownerOnly = active && activeNames.length > 1 && activeNames[0] === name;
+      const state = timeline[t]?.states?.[name];
       const td = document.createElement('td');
-      td.className = active ? `busy${ownerOnly ? ' owner-cell' : ''}` : 'idle';
+      td.className = active ? `busy${ownerOnly ? ' owner-cell' : ''}` : `idle${state === 'ready' ? ' state-ready' : ''}${state === 'wait' ? ' state-wait' : ''}`;
+      if (!active && (state === 'ready' || state === 'wait')) td.title = state === 'ready' ? 'Ready' : 'Wait';
       if (active) {
         td.textContent = ownerOnly ? '' : name;
         if (!ownerOnly) td.style.background = colorMap[name];
